@@ -9,9 +9,8 @@ from shutil import move
 import pandas as pd
 import lxml.etree as etree
 
+import logging
 
-if not os.path.exists('csv'):
-    os.makedirs('csv')
 
 LOGIN_URL = 'https://bakker-logistiek-iw9.nekovri-dynamics.nl/en-us/welcome.aspx'
 VOORRAAD_URL = 'https://bakker-logistiek-iw9.nekovri-dynamics.nl/Lists/tabid/2379/list/PIJN_001/modid/3695/language/en-US/Default.aspx?title=%5cA.+Voorraad+per+artikel'
@@ -25,7 +24,7 @@ BOLTRICS_XML = 'boltrics.xml'
 KING_FILE = 'D:\\King\\boltrics.xml'
 
 def get_csv():
-    print("Fetching CSV file from Boltrics")
+    logging.info("Fetching CSV file from Boltrics")
     browser.get(LOGIN_URL)
     username = browser.find_element_by_id('dnn_ctr3692_Login_Login_DNN_txtUsername')
     password = browser.find_element_by_id('dnn_ctr3692_Login_Login_DNN_txtPassword')
@@ -59,7 +58,7 @@ def add_xml(node, art_id, amount):
     #     etree.SubElement(item, 'VCR_PARTIJ').text = '(Standaard)'
 
 def convert_csv():
-    print("Converting CSV")
+    logging.info("Converting CSV")
     files = os.listdir(DESTINATION)
     paths = [os.path.join(DESTINATION, basename) for basename in files]
     latest_file = max(paths, key=os.path.getctime)
@@ -78,14 +77,24 @@ def convert_csv():
     os.remove(latest_file)
 
 def sync_king():
-    print("Synchronizing KING")
+    logging.info("Synchronizing KING")
     os.system(BOLTRICS_SYNC_SCRIPT_PATH)
 
 if __name__ == '__main__':
     load_dotenv(verbose=True)
 
+    logging.basicConfig(format='%(asctime)s %(message)s', filename='boltrics.log', level=logging.INFO)
+
+    if not os.path.exists('csv'):
+        os.makedirs('csv')
+
     USERNAME = os.getenv('BOLTRICS_USERNAME')
     PASSWORD = os.getenv('BOLTRICS_PASSWORD')
+
+    SMTP_SERVER = os.getenv('SMTP_SERVER')
+    RECEIVER_EMAIL = os.getenv('RECEIVER_EMAIL')
+    SENDER_EMAIL = os.getenv('SENDER_EMAIL')
+    SENDER_PASSWORD = os.getenv('SENDER_PASSWORD')
 
     profile = FirefoxProfile()
     profile.set_preference('browser.download.folderList', 2) # custom location
@@ -100,6 +109,13 @@ if __name__ == '__main__':
     # assert options.headless  # Operating in headless mode
     browser = Firefox(options=options, firefox_profile=profile)
 
-    get_csv()
-    convert_csv()
-    sync_king()
+    try:
+        from mail import mail
+        get_csv()
+        convert_csv()
+        sync_king()
+    except Exception as e:
+        logging.error(e)
+        mail(SMTP_SERVER, SENDER_EMAIL, RECEIVER_EMAIL, SENDER_PASSWORD, e)
+
+
