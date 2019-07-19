@@ -75,6 +75,7 @@ def convert_csv():
     with open(BOLTRICS_XML, 'wb') as f:
         f.write(etree.tostring(root, pretty_print=True))
     move(BOLTRICS_XML, KING_FILE)
+    os.remove(latest_file)
 
 def sync_king():
     print("Synchronizing KING")
@@ -95,8 +96,8 @@ if __name__ == '__main__':
     profile.set_preference('browser.helperApps.alwaysAsk.force', False)
 
     options = Options()
-    options.set_headless()
-    assert options.headless  # Operating in headless mode
+    # options.set_headless()
+    # assert options.headless  # Operating in headless mode
     browser = Firefox(options=options, firefox_profile=profile)
 
     get_csv()
