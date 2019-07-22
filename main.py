@@ -68,7 +68,8 @@ def convert_csv():
     regels = root.find("VOORRAADCORRECTIES/VOORRAADCORRECTIE/VOORRAADCORRECTIE_REGELS")
     for i, row in df.iterrows():
         art_id = row['Uw artikelnr.'].strip()
-        amount = row['Totaal excl. inslag']
+        # amount = row['Totaal excl. inslag']
+        amount = row['Aantal eenheden']
         add_xml(regels, art_id, str(amount).strip())
 
     with open(BOLTRICS_XML, 'wb') as f:
@@ -105,8 +106,8 @@ if __name__ == '__main__':
     profile.set_preference('browser.helperApps.alwaysAsk.force', False)
 
     options = Options()
-    # options.set_headless()
-    # assert options.headless  # Operating in headless mode
+    options.set_headless()
+    assert options.headless  # Operating in headless mode
     browser = Firefox(options=options, firefox_profile=profile)
 
     try:
