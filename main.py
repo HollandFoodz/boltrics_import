@@ -52,10 +52,10 @@ def get_csv():
     browser.close()
 
 
-def convert_csv(cursor, mag_id, xml_file, output_file):
+def convert_csv(cursor, mag_id, xml_template_file, output_file):
     logging.info("Converting CSV")
     latest_file = get_latest_file(DESTINATION)
-    root, regels = get_xml_file_insert(xml_file)
+    root, regels = get_xml_file_insert(xml_template_file)
 
     df = pd.read_csv(latest_file, sep=';')
     articles = ', '.join('\'{}\''.format(str(row['Uw artikelnr.']).strip()) for _, row in df.iterrows())
@@ -151,4 +151,5 @@ if __name__ == '__main__':
         error_msg = e
 
     if exit_code:
+        error_msg = 'An import from the Boltrics (Zeewolde) system failed.\n\nPlease contact IT to review the following error:\n\n{}'.format(error_msg)
         mail(SMTP_SERVER, SENDER_EMAIL, RECEIVER_EMAIL, SENDER_PASSWORD, error_msg)
