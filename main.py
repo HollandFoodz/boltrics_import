@@ -11,6 +11,15 @@ import lxml.etree as etree
 
 import logging
 
+import pyodbc
+
+from mail import mail
+from reset_inventory import reset_inventory
+
+from utils import add_xml, write_xml, get_xml_file_insert, get_latest_file
+
+from article import Article
+
 
 LOGIN_URL = 'https://bakker-logistiek-iw9.nekovri-dynamics.nl/en-us/welcome.aspx'
 VOORRAAD_URL = 'https://bakker-logistiek-iw9.nekovri-dynamics.nl/Lists/tabid/2379/list/PIJN_001/modid/3695/language/en-US/Default.aspx?title=%5cA.+Voorraad+per+artikel'
@@ -22,6 +31,7 @@ ZEEWOLDE_MAGAZIJN_ID="010"
 BOLTRICS_SYNC_SCRIPT_PATH="D:\King\Scripts\BoltricsSync.bat"
 BOLTRICS_XML = 'boltrics.xml'
 KING_FILE = 'D:\\King\\boltrics.xml'
+KING_XML_TEMPLATE = 'king_voorraadcorrectie.xml'
 
 def get_csv():
     logging.info("Fetching CSV file from Boltrics")
@@ -42,44 +52,45 @@ def get_csv():
     browser.close()
 
 
-def add_xml(node, art_id, amount):
-
-    # Ignore VP articles for now
-    if 'VP' in art_id:
-        return
-    item = etree.SubElement(node, 'VOORRAADCORRECTIEREGEL')
-    etree.SubElement(item, 'VCR_ARTIKEL').text = art_id
-    etree.SubElement(item, 'VCR_AANTAL').text = amount
-    etree.SubElement(item, 'VCR_MAGAZIJN').text = ZEEWOLDE_MAGAZIJN_ID
-    etree.SubElement(item, 'VCR_LOCATIE').text = '(Standaard)'
-
-    # if 'VP' in art_id:
-    #     print(art_id)
-    #     etree.SubElement(item, 'VCR_PARTIJ').text = '(Standaard)'
-
-def convert_csv():
+def convert_csv(cursor, mag_id, xml_file, output_file):
     logging.info("Converting CSV")
-    files = os.listdir(DESTINATION)
-    paths = [os.path.join(DESTINATION, basename) for basename in files]
-    latest_file = max(paths, key=os.path.getctime)
+    latest_file = get_latest_file(DESTINATION)
+    root, regels = get_xml_file_insert(xml_file)
 
     df = pd.read_csv(latest_file, sep=';')
-    root = etree.parse('king_voorraadcorrectie.xml').getroot()
-    regels = root.find("VOORRAADCORRECTIES/VOORRAADCORRECTIE/VOORRAADCORRECTIE_REGELS")
+    articles = ', '.join('\'{}\''.format(str(row['Uw artikelnr.']).strip()) for _, row in df.iterrows())
+    sql_query = 'SELECT ArtCode, ArtIsPartijRegistreren, KingSystem.tabArtikelPartij.ArtPartijNummer as ArtPartijNummer \
+        from KingSystem.tabArtikel LEFT JOIN KingSystem.tabArtikelPartij \
+        ON KingSystem.tabArtikel.ArtGid=KingSystem.tabArtikelPartij.ArtPartijArtGid \
+        WHERE (KingSystem.tabArtikelPartij.ArtPartijIsGeblokkeerdVoorVerkoop = 0 OR KingSystem.tabArtikel.ArtIsPartijRegistreren = 0) AND \
+        KingSystem.tabArtikel.ArtCode in ({})'.format(articles)
+
+    # Fetch partij information
+    cursor.execute(sql_query)
+    rows = cursor.fetchall()
+    articles = {}
+    for row in rows:
+        articles[row.ArtCode] = Article(row.ArtCode, row.ArtPartijNummer, row.ArtIsPartijRegistreren)
+
+    print(len(rows), len(df))
     for i, row in df.iterrows():
         art_id = row['Uw artikelnr.'].strip()
+        article = articles[art_id]
         # amount = row['Totaal excl. inslag']
         amount = row['Aantal eenheden']
-        add_xml(regels, art_id, str(amount).strip())
 
-    with open(BOLTRICS_XML, 'wb') as f:
-        f.write(etree.tostring(root, pretty_print=True))
-    move(BOLTRICS_XML, KING_FILE)
+        if article.partijregistratie:
+            add_xml(regels, art_id, str(amount).strip(), mag_id, article.partijnummer)
+        else:
+            add_xml(regels, art_id, str(amount).strip(), mag_id)
+
+    write_xml(output_file, root)
     os.remove(latest_file)
 
-def sync_king():
+def sync_king(output_file):
     logging.info("Synchronizing KING")
-    os.system(BOLTRICS_SYNC_SCRIPT_PATH)
+    move(output_file, KING_FILE)
+    return os.system(BOLTRICS_SYNC_SCRIPT_PATH)
 
 if __name__ == '__main__':
     load_dotenv(verbose=True)
@@ -97,6 +108,16 @@ if __name__ == '__main__':
     SENDER_EMAIL = os.getenv('SENDER_EMAIL')
     SENDER_PASSWORD = os.getenv('SENDER_PASSWORD')
 
+    ODBC_SOURCE = os.getenv('ODBC_SOURCE')
+    ODBC_UID = os.getenv('ODBC_UID')
+    ODBC_PWD = os.getenv('ODBC_PWD')
+
+    conn_str = 'DSN={};UID={};PWD={}'.format(ODBC_SOURCE, ODBC_UID, ODBC_PWD)
+
+    conn = pyodbc.connect(conn_str)
+    cursor = conn.cursor()
+
+
     profile = FirefoxProfile()
     profile.set_preference('browser.download.folderList', 2) # custom location
     profile.set_preference('browser.download.manager.showWhenStarting', False)
@@ -110,13 +131,24 @@ if __name__ == '__main__':
     assert options.headless  # Operating in headless mode
     browser = Firefox(options=options, firefox_profile=profile)
 
+    exit_code = 0
+    error_msg = ''
     try:
-        from mail import mail
+        # Reset the inventory first for MagID Zeewolde (010)
+        reset_inventory(cursor, ZEEWOLDE_MAGAZIJN_ID, KING_XML_TEMPLATE, BOLTRICS_XML)
+
+        # Update with new values
         get_csv()
-        convert_csv()
-        sync_king()
+        convert_csv(cursor, ZEEWOLDE_MAGAZIJN_ID, BOLTRICS_XML, BOLTRICS_XML)
+        exit_code = sync_king(BOLTRICS_XML)
+
+        if exit_code:
+            error_msg = 'King could not import new inventory (Job failed)'
+
     except Exception as e:
         logging.error(e)
-        mail(SMTP_SERVER, SENDER_EMAIL, RECEIVER_EMAIL, SENDER_PASSWORD, e)
+        exit_code = 1
+        error_msg = e
 
-
+    if exit_code:
+        mail(SMTP_SERVER, SENDER_EMAIL, RECEIVER_EMAIL, SENDER_PASSWORD, error_msg)
