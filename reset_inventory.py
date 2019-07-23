@@ -2,7 +2,7 @@ import lxml.etree as etree
 from utils import *
 
 # Reindex database?
-ignored_articles = ['000', '001', '002', '003', '004', '005', 'TSDFDF', 'Kok', 'Deegbereiding', 'Rollen', \
+ignored_articles = ['TSDFDF', 'Kok', 'Deegbereiding', 'Rollen', \
     'Flowpacken', 'chocolateren', 'Deegbreiding likz', 'Inleg lolly', 'Insteek lolly', 'Inpak likz', 'Inpak Nougat', \
     'Inpak stokken', 'Inpak wichtgoed', 'Magazijn', 'Nougat snijden', 'Spinnen lolly', 'TD']
 
@@ -17,6 +17,12 @@ def reset_inventory(cursor, mag_id, xml_file, output_file):
     amount = 0
     for row in rows:
         art_id = str(row.ArtCode)
+        
+        # skip all the 000, 001, 099, etc.
+        if len(art_id) == 3:
+            if art_id[0].isdigit() and art_id[1].isdigit() and art_id[2].isdigit():
+                continue
+
         if art_id in ignored_articles:
             continue
 
