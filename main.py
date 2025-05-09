@@ -1,184 +1,102 @@
 import os
-from selenium.webdriver import Firefox, FirefoxProfile
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.firefox.options import Options
-from selenium.webdriver.common.by import By
-from time import sleep
-from dotenv import load_dotenv
-from shutil import move, copy
-
-import pandas as pd
-import lxml.etree as etree
-
 import logging
-
-import pyodbc
-
-from mail import mail
-from reset_inventory import reset_inventory
-
-from utils import add_xml, write_xml, get_xml_file_insert, get_latest_file
-
-from article import Article
-
+from dotenv import load_dotenv
+from boltrics_import.mail import mail
+from playwright.sync_api import sync_playwright
+from shutil import copy
+from io import StringIO
 
 LOGIN_URL = "https://bakker-logistiek-iw9.nekovri-dynamics.nl/en-us/welcome.aspx"
 VOORRAAD_URL = "https://bakker-logistiek-iw9.nekovri-dynamics.nl/Lists/tabid/2379/list/PIJN_001/modid/3695/language/en-US/Default.aspx?title=%5cA.+Voorraad+per+artikel"
 
 CWD = os.path.dirname(os.path.realpath(__file__))
-DESTINATION = os.path.join(CWD, "csv")
+ARCHIVE_DIR = os.path.join(CWD, "csv")
+DESTINATION = "Z:\\_Dashboard\\Databases\\bakker.csv"
 
-ZEEWOLDE_MAGAZIJN_ID = "010"
-BOLTRICS_SYNC_SCRIPT_PATH = "Z:\King\Scripts\BoltricsSync.bat"
-BOLTRICS_XML = "boltrics.xml"
-KING_FILE = "Z:\\King\\boltrics.xml"
-KING_XML_TEMPLATE = "king_voorraadcorrectie.xml"
+# Create an in-memory StringIO object to capture logs for email
+log_stream = StringIO()
 
+# Create logging handlers
+file_handler = logging.FileHandler("boltrics.log")
+stream_handler = logging.StreamHandler(log_stream)
 
-def get_csv():
+# Set up logging configuration to capture all log levels and output to both file and stream
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[file_handler, stream_handler]
+)
+
+def get_csv(USERNAME, PASSWORD):
     logging.info("Fetching CSV file from Boltrics")
-    browser.get(LOGIN_URL)
-    username = browser.find_element(By.ID, "dnn_ctr3692_Login_Login_DNN_txtUsername")
-    password = browser.find_element(By.ID, "dnn_ctr3692_Login_Login_DNN_txtPassword")
-    login_btn = browser.find_element(By.ID, "dnn_ctr3692_Login_Login_DNN_cmdLogin")
 
-    username.send_keys(USERNAME)
-    password.send_keys(PASSWORD)
-    login_btn.click()
+    with sync_playwright() as p:
+        browser = p.firefox.launch(headless=False)
+        context = browser.new_context(accept_downloads=True)
+        page = context.new_page()
 
-    sleep(1)
+        # Login
+        page.goto(LOGIN_URL)
 
-    browser.get(VOORRAAD_URL)
-    download_csv_btn = browser.find_element(
-        By.ID,
-        "dnn_ctr3694_Viewer_bolList_bolRadGrid_rdgList_ctl00_ctl02_ctl00_LinkButton1",
-    )
-    download_csv_btn.click()
-    browser.close()
+        # Wait for the input fields to be visible
+        page.wait_for_selector("input#dnn_ctr3692_Login_Login_DNN_txtUsername", timeout=2000)
+        page.fill("input#dnn_ctr3692_Login_Login_DNN_txtUsername", USERNAME)
+        page.fill("input#dnn_ctr3692_Login_Login_DNN_txtPassword", PASSWORD)
 
+        # Wait until the login button is enabled and visible, then click
+        page.evaluate("""__doPostBack('dnn$ctr3692$Login$Login_DNN$cmdLogin','')""")
 
-def convert_csv(cursor, mag_id, xml_template_file, output_file):
-    logging.info("Converting CSV")
-    latest_file = get_latest_file(DESTINATION)
-    root, regels = get_xml_file_insert(xml_template_file)
+        # Optional: wait for navigation or some element on the next page to appear
+        page.wait_for_load_state("networkidle")
 
-    df = pd.read_csv(latest_file, sep=";")
-    breakpoint()
-    articles = ", ".join(
-        "'{}'".format(str(row["Uw artikelnr."]).strip()) for _, row in df.iterrows()
-    )
-    sql_query = "SELECT ArtCode, ArtIsPartijRegistreren, KingSystem.tabArtikelPartij.ArtPartijNummer as ArtPartijNummer \
-        from KingSystem.tabArtikel LEFT JOIN KingSystem.tabArtikelPartij \
-        ON KingSystem.tabArtikel.ArtGid=KingSystem.tabArtikelPartij.ArtPartijArtGid \
-        WHERE (KingSystem.tabArtikelPartij.ArtPartijIsGeblokkeerdVoorVerkoop = 0 OR KingSystem.tabArtikel.ArtIsPartijRegistreren = 0) AND \
-        KingSystem.tabArtikel.ArtCode in ({})".format(
-        articles
-    )
+        # Navigate to data page
+        page.goto(VOORRAAD_URL)
+        page.wait_for_load_state("networkidle")
 
-    # Fetch partij information
-    cursor.execute(sql_query)
-    rows = cursor.fetchall()
-    articles = {}
-    for row in rows:
-        articles[row.ArtCode] = Article(
-            row.ArtCode, row.ArtPartijNummer, row.ArtIsPartijRegistreren
-        )
+        # Start download
+        with page.expect_download() as download_info:
+            page.evaluate("""__doPostBack('dnn$ctr3694$Viewer$bolList$bolRadGrid$rdgList$ctl00$ctl02$ctl00$LinkButton1','')""")
 
-    for i, row in df.iterrows():
-        art_id = row["Uw artikelnr."].strip()
+        download = download_info.value
+        filepath = os.path.join(ARCHIVE_DIR, download.suggested_filename)
+        download.save_as(filepath)
+        logging.info(f"Downloaded CSV to archive: {filepath}")
+        context.close()
+        browser.close()
+        return filepath
 
-        if art_id not in articles:
-            logging.warn(f"Skipping {art_id}")
-            continue
-
-        article = articles[art_id]
-        # amount = row['Totaal incl. inslag']
-        amount = row["Aantal eenheden"]
-
-        print(art_id, amount)
-
-        if article.partijregistratie:
-            add_xml(regels, art_id, str(amount).strip(), mag_id, article.partijnummer)
-        else:
-            add_xml(regels, art_id, str(amount).strip(), mag_id)
-
-    write_xml(output_file, root)
-
-    copy(latest_file, "latest_boltrics_stock.csv")
-    os.remove(latest_file)
-
-
-def sync_king(output_file):
-    logging.info("Synchronizing KING")
-    move(output_file, KING_FILE)
-    return os.system(BOLTRICS_SYNC_SCRIPT_PATH)
-
+# Function to get all logs from the in-memory stream
+def get_all_logs():
+    logs = log_stream.getvalue().strip()
+    return logs
 
 if __name__ == "__main__":
     load_dotenv(verbose=True)
 
-    logging.basicConfig(
-        format="%(asctime)s %(message)s", filename="boltrics.log", level=logging.INFO
-    )
-
-    if not os.path.exists("csv"):
-        os.makedirs("csv")
+    if not os.path.exists(ARCHIVE_DIR):
+        os.makedirs(ARCHIVE_DIR)
 
     USERNAME = os.getenv("BOLTRICS_USERNAME")
     PASSWORD = os.getenv("BOLTRICS_PASSWORD")
 
     SMTP_SERVER = os.getenv("SMTP_SERVER")
+    FROM_EMAIL = os.getenv("FROM_EMAIL")
     RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
-    SENDER_EMAIL = os.getenv("SENDER_EMAIL")
+    SENDER_USERNAME = os.getenv("SENDER_EMAIL")
     SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
 
-    ODBC_SOURCE = os.getenv("ODBC_SOURCE")
-    ODBC_UID = os.getenv("ODBC_UID")
-    ODBC_PWD = os.getenv("ODBC_PWD")
+    try:
+        csv_filepath = get_csv(USERNAME, PASSWORD)
+        copy(csv_filepath, DESTINATION)
+        logging.info(f"Bakker data updated to {DESTINATION}")
+        exit_code = 0
+    except Exception as e:
+        logging.error("An import from the Boltrics (Zeewolde) system failed.\n\nPlease contact IT to review the following error:")
+        logging.error(e)
+        exit_code = 1
 
-    conn_str = "DSN={};UID={};PWD={}".format(ODBC_SOURCE, ODBC_UID, ODBC_PWD)
+    # Get all logs from the in-memory stream for email
+    message = get_all_logs()
 
-    conn = pyodbc.connect(conn_str)
-    cursor = conn.cursor()
-
-    options = Options()
-    options.set_preference("browser.download.folderList", 2)  # custom location
-    options.set_preference("browser.download.manager.showWhenStarting", False)
-    options.set_preference("browser.download.dir", DESTINATION)
-    options.set_preference("browser.download.manager.showWhenStarting", False)
-    options.set_preference(
-        "browser.helperApps.neverAsk.saveToDisk",
-        "text/csv,text/xls,application/excel,application/vnd.ms-excel",
-    )
-    options.set_preference("browser.helperApps.alwaysAsk.force", False)
-    options.add_argument("--headless")
-    options.binary_location = r"C:\Program Files\Mozilla Firefox\firefox.exe"
-    browser = Firefox(options=options)
-
-    exit_code = 0
-    error_msg = ""
-    # try:
-    # Reset the inventory first for MagID Zeewolde (010)
-    reset_inventory(cursor, ZEEWOLDE_MAGAZIJN_ID, KING_XML_TEMPLATE, BOLTRICS_XML)
-
-    # Update with new values
-    get_csv()
-    convert_csv(cursor, ZEEWOLDE_MAGAZIJN_ID, BOLTRICS_XML, BOLTRICS_XML)
-    exit_code = sync_king(BOLTRICS_XML)
-
-    if exit_code:
-        error_msg = "King could not import new inventory (Job failed)"
-
-    # except Exception as e:
-    #     logging.error(e)
-    #     exit_code = 1
-    #     error_msg = e
-    #     browser.quit()
-
-    # if exit_code:
-    #     error_msg = 'An import from the Boltrics (Zeewolde) system failed.\n\nPlease contact IT to review the following error:\n\n{}'.format(error_msg)
-    #     mail(SMTP_SERVER, SENDER_EMAIL, RECEIVER_EMAIL, SENDER_PASSWORD, error_msg)
-    # else:
-    #     logging.info("Completed successfully")
-
-    browser.quit()
+    # Send the email with the log content
+    mail(SMTP_SERVER, SENDER_USERNAME, FROM_EMAIL, RECEIVER_EMAIL, SENDER_PASSWORD, message, exit_code)
