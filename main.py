@@ -31,7 +31,7 @@ def get_csv(USERNAME, PASSWORD):
     logging.info("Fetching CSV file from Boltrics")
 
     with sync_playwright() as p:
-        browser = p.firefox.launch(headless=False)
+        browser = p.firefox.launch(headless=True)
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
 
