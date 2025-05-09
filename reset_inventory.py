@@ -102,9 +102,9 @@ def reset_inventory(cursor, mag_id, xml_file, output_file):
         art_id = str(row.ArtCode)
 
         # skip all the 000, 001, 099, etc.
-        if len(art_id) == 3:
-            if art_id[0].isdigit() and art_id[1].isdigit() and art_id[2].isdigit():
-                continue
+        # if len(art_id) == 3:
+        #     if art_id[0].isdigit() and art_id[1].isdigit() and art_id[2].isdigit():
+        #         continue
 
                 
         # if art_id in ignored_articles:

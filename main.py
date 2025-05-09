@@ -29,9 +29,9 @@ CWD = os.path.dirname(os.path.realpath(__file__))
 DESTINATION = os.path.join(CWD, "csv")
 
 ZEEWOLDE_MAGAZIJN_ID = "010"
-BOLTRICS_SYNC_SCRIPT_PATH = "D:\King\Scripts\BoltricsSync.bat"
+BOLTRICS_SYNC_SCRIPT_PATH = "Z:\King\Scripts\BoltricsSync.bat"
 BOLTRICS_XML = "boltrics.xml"
-KING_FILE = "D:\\King\\boltrics.xml"
+KING_FILE = "Z:\\King\\boltrics.xml"
 KING_XML_TEMPLATE = "king_voorraadcorrectie.xml"
 
 
@@ -63,6 +63,7 @@ def convert_csv(cursor, mag_id, xml_template_file, output_file):
     root, regels = get_xml_file_insert(xml_template_file)
 
     df = pd.read_csv(latest_file, sep=";")
+    breakpoint()
     articles = ", ".join(
         "'{}'".format(str(row["Uw artikelnr."]).strip()) for _, row in df.iterrows()
     )
